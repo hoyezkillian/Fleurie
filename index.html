@@ -36,14 +36,29 @@
   #retour.visible { opacity: 1; pointer-events: auto; }
   #retour:hover { transform: translateX(-50%) scale(1.05); }
 
+  #controle-volume {
+    position: fixed; top: 1rem; left: 1rem; z-index: 20;
+    display: flex; align-items: center; gap: .65rem;
+    padding: .65rem .85rem; border-radius: 12px;
+    color: #fff; background: rgba(20, 16, 38, .72);
+    box-shadow: 0 4px 16px rgba(0,0,0,.2); backdrop-filter: blur(8px);
+    font-size: .95rem;
+  }
+  #volume { width: 110px; accent-color: var(--rose); cursor: pointer; }
+  #volume:focus-visible { outline: 2px solid #fff; outline-offset: 4px; }
+
   @media (prefers-reduced-motion: reduce) { .bouton, #menu, #retour { transition: none; } }
 </style>
 </head>
 <body>
 
 <canvas id="scene"></canvas>
-<div id="menu"><button class="bouton" id="entrer">Cliquer</button></div>
+<div id="menu"><button class="bouton" id="entrer">Cliquer (y'a du son)</button></div>
 <button class="bouton" id="retour">Cliquer</button>
+<label id="controle-volume" for="volume">
+  <span>Volume</span>
+  <input id="volume" type="range" min="0" max="1" step="0.01" value="0.5" aria-label="Volume de la musique">
+</label>
 
 <script>
 (() => {
@@ -51,6 +66,13 @@
   const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
   const menu = document.getElementById('menu');
   const retour = document.getElementById('retour');
+  const reglageVolume = document.getElementById('volume');
+  const musique = new Audio('./Tame%20Impala%20-%20New%20Person%2C%20Same%20Old%20Mistakes%20(Audio).mp3');
+  musique.loop = true;
+  musique.volume = Number(reglageVolume.value);
+  reglageVolume.addEventListener('input', () => {
+    musique.volume = Number(reglageVolume.value);
+  });
   const mobile = matchMedia('(pointer: coarse)').matches || Math.min(window.innerWidth, window.innerHeight) <= 600;
   const lowPower = mobile || (navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4);
   const nbFleurs = lowPower ? 90 : 150;
@@ -262,8 +284,10 @@
   }
 
   // ---------- Timeline ----------
-  const T_FLEUR = 5500, T_CHAMP = 10500, T_LUNE = 15500, T_BOUTON = 17500;
+  const T_FLEUR = 5500, T_CHAMP = 13000, T_LUNE = 18000, T_BOUTON = 20000;
+  const T_FINALE = 6500;
   let t0 = 0, actif = false, raf = 0, boutonMontre = false;
+  let phase = 'scene', finaleT0 = 0, imageScene = null, sceneW = 0, sceneH = 0, sceneDpr = 1;
 
   function dessiner(now) {
     const t = now - t0;
@@ -420,9 +444,95 @@
     if (t > T_BOUTON && !boutonMontre) { boutonMontre = true; retour.classList.add('visible'); }
   }
 
+  function dessinerFinale(now) {
+    const t = now - finaleT0;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    const zoomT = ease(seg(t, 0, 3000));
+    const zoomScene = lerp(1, 4.2, zoomT);
+    const r0 = clamp(Math.min(sceneW, sceneH) * (sceneW < 600 ? .11 : .085), 34, 82);
+    const rEnd = r0 * 1.7;
+    const luneX = sceneW - rEnd - Math.max(24, sceneW * .06);
+    const luneY = rEnd + Math.max(40, sceneH * .1);
+    const centreX = lerp(sceneW / 2, luneX, zoomT);
+    const centreY = lerp(sceneH / 2, luneY, zoomT);
+    const cx = W / 2, cy = H * .43;
+    const fonduNoir = ease(seg(t, 3000, 3900));
+
+    if (imageScene) {
+      const sourceW = sceneW / zoomScene * sceneDpr;
+      const sourceH = sceneH / zoomScene * sceneDpr;
+      const sourceX = (centreX - sceneW / (2 * zoomScene)) * sceneDpr;
+      const sourceY = (centreY - sceneH / (2 * zoomScene)) * sceneDpr;
+      ctx.drawImage(imageScene, sourceX, sourceY, sourceW, sourceH, 0, 0, W, H);
+      if (fonduNoir > 0) {
+        ctx.fillStyle = `rgba(0,0,0,${fonduNoir})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+
+    const tracage = ease(seg(t, 3900, 5700));
+    if (tracage > 0) {
+      const echelle = lerp(1.35, .78, ease(seg(t, 4400, T_FINALE)));
+      const taille = Math.min(W, H) * .32 * echelle;
+      const nbPoints = 100;
+      const points = Array.from({ length: nbPoints + 1 }, (_, i) => {
+        const a = i / nbPoints * TAU;
+        return {
+          x: 16 * Math.pow(Math.sin(a), 3) / 17,
+          y: -(13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)) / 17
+        };
+      });
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(taille, taille);
+      ctx.fillStyle = `rgba(220,35,100,${.08 * tracage})`;
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.shadowColor = 'rgba(255,80,150,.8)';
+      ctx.shadowBlur = .025;
+      ctx.strokeStyle = `rgba(255,125,180,${tracage})`;
+      ctx.lineWidth = .012;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      const traceJusqua = Math.max(1, Math.floor(tracage * nbPoints));
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i <= traceJusqua; i++) ctx.lineTo(points[i].x, points[i].y);
+      ctx.stroke();
+
+      const nbLignes = Math.floor(ease(seg(tracage, .12, 1)) * 30);
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = `rgba(255,170,205,${.55 * tracage})`;
+      ctx.lineWidth = .004;
+      for (let i = 0; i < nbLignes; i++) {
+        const p = points[Math.floor(i * nbPoints / 30)];
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    if (t >= T_FINALE && phase === 'finale') {
+      phase = 'pret';
+      retour.classList.add('visible');
+    }
+  }
+
   function boucle(now) {
     if (!actif) return;
-    if (now - dernierRendu >= frameInterval) { dessiner(now); dernierRendu = now; }
+    if (now - dernierRendu >= frameInterval) {
+      if (phase === 'finale' || phase === 'pret') dessinerFinale(now);
+      else dessiner(now);
+      dernierRendu = now;
+    }
     raf = requestAnimationFrame(boucle);
   }
 
@@ -432,6 +542,10 @@
   function lancer() {
     clearTimeout(minuterie);          // annule l'arrêt programmé au retour (cause du bug au 2e clic)
     cancelAnimationFrame(raf);
+    musique.currentTime = 0;
+    musique.play().catch(error => console.error('Impossible de lancer la musique :', error));
+    phase = 'scene';
+    imageScene = null;
     boutonMontre = false;
     retour.classList.remove('visible');
     t0 = performance.now();
@@ -443,16 +557,35 @@
   }
 
   function revenir() {
+    musique.pause();
+    musique.currentTime = 0;
     retour.classList.remove('visible');
     menu.classList.remove('cache');
     clearTimeout(minuterie);
     minuterie = setTimeout(() => {
-      actif = false; cancelAnimationFrame(raf); canvas.style.display = 'none';
+      actif = false; cancelAnimationFrame(raf); canvas.style.display = 'none'; phase = 'scene';
     }, 900);
   }
 
+  function lancerFinale() {
+    imageScene = document.createElement('canvas');
+    imageScene.width = canvas.width;
+    imageScene.height = canvas.height;
+    imageScene.getContext('2d').drawImage(canvas, 0, 0);
+    sceneW = W;
+    sceneH = H;
+    sceneDpr = dpr;
+    phase = 'finale';
+    finaleT0 = performance.now();
+    retour.classList.remove('visible');
+    dernierRendu = 0;
+  }
+
   document.getElementById('entrer').addEventListener('click', lancer);
-  retour.addEventListener('click', revenir);
+  retour.addEventListener('click', () => {
+    if (phase === 'scene') lancerFinale();
+    else if (phase === 'pret') revenir();
+  });
   canvas.style.display = 'none';
 })();
 </script>
