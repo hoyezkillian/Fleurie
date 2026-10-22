@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fleurie</title>
+<style>
+  :root { --rose: #ff6fb1; --rose-fonce: #e84f97; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: #1c1840; font-family: system-ui, sans-serif; }
+
+  #menu {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: #77777d; overflow: hidden; transition: opacity .8s ease; z-index: 10;
+  }
+  #menu::before, #menu::after { content: ""; position: absolute; border-radius: 50%; filter: blur(60px); }
+  #menu::before { width: 55vmax; height: 55vmax; left: -15vmax; top: -15vmax; background: #a9a9af; }
+  #menu::after  { width: 50vmax; height: 50vmax; right: -12vmax; bottom: -18vmax; background: #55555b; }
+  #menu.cache { opacity: 0; pointer-events: none; }
+
+  .bouton {
+    position: relative; z-index: 1; border: 0; cursor: pointer;
+    background: var(--rose); color: #fff; font-size: 1.4rem; font-weight: 600; letter-spacing: .02em;
+    padding: 1rem 3.2rem; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.25);
+    transition: transform .2s ease, background .2s ease;
+  }
+  .bouton:hover { background: var(--rose-fonce); transform: scale(1.05); }
+  .bouton:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
+
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  #retour {
+    position: fixed; left: 50%; bottom: 8vh; transform: translateX(-50%);
+    opacity: 0; pointer-events: none; transition: opacity 1.2s ease; z-index: 5;
+  }
+  #retour.visible { opacity: 1; pointer-events: auto; }
+  #retour:hover { transform: translateX(-50%) scale(1.05); }
+
+  @media (prefers-reduced-motion: reduce) { .bouton, #menu, #retour { transition: none; } }
+</style>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+<div id="menu"><button class="bouton" id="entrer">Cliquer</button></div>
+<button class="bouton" id="retour">Cliquer</button>
+
+<script>
+(() => {
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+  const menu = document.getElementById('menu');
+  const retour = document.getElementById('retour');
+  const mobile = matchMedia('(pointer: coarse)').matches || Math.min(window.innerWidth, window.innerHeight) <= 600;
+  const lowPower = mobile || (navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 4);
+  const nbFleurs = lowPower ? 90 : 150;
+  const nbHerbes = lowPower ? 150 : 270;
+  const nbFleurettes = lowPower ? 70 : 130;
+  const nbEtoiles = lowPower ? 80 : 130;
+  const frameInterval = lowPower ? 1000 / 30 : 1000 / 50;
+  let W, H, dpr, bz, dernierRendu = 0;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, mobile ? 1.25 : 1.5);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bz = Math.min(H, W * 1.2) / 700;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- Outils ----------
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const ease = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+  const seg = (t, a, b) => clamp((t - a) / (b - a));
+  const backOut = x => { const c1 = 1.25, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+  const TAU = Math.PI * 2;
+
+  // ---------- Données aléatoires (fixes) ----------
+  let seed = 11;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const PAL = [['#ff5aa5', '#ff93c4'], ['#ff8fc0', '#ffc6e0'], ['#c58bff', '#e2c4ff'], ['#fff0f6', '#ffd1e6'], ['#ff9f8a', '#ffcdbf']];
+
+  // d : 0 = tout devant, 1 = à l'horizon
+  const champ = Array.from({ length: nbFleurs }, () => ({
+    x: (rnd() - .5) * 3300, d: rnd(), ph: rnd() * 6.28, l: rnd() * 14 - 7, h: .8 + rnd() * .4, p: Math.floor(rnd() * PAL.length)
+  })).sort((a, b) => b.d - a.d);
+  const devantIdx = champ.findIndex(f => f.d < .6);
+  const herbes = Array.from({ length: nbHerbes }, () => ({
+    x: (rnd() - .5) * 3600, d: rnd(), h: 14 + rnd() * 30, ph: rnd() * 6.28, teinte: rnd()
+  }));
+  const fleurettes = Array.from({ length: nbFleurettes }, () => ({
+    x: (rnd() - .5) * 3600, d: rnd(), p: Math.floor(rnd() * PAL.length)
+  }));
+  const avant = Array.from({ length: 50 }, () => ({ x: (rnd() - .5) * 1000, y: rnd() * 45, hh: 34 + rnd() * 60, b: rnd() * 26 - 13, ph: rnd() * 6.28 }));
+  const etoiles = Array.from({ length: nbEtoiles }, () => ({ x: rnd(), y: rnd() * .85, r: .4 + rnd() * 1.4, ph: rnd() * 6.28 }));
+
+  const yRang = d => -140 + Math.pow(1 - d, 1.6) * 620; // ordonnée monde d'une rangée de fleurs
+
+  // ---------- Tige, feuilles ----------
+  function tige(sway, lum, larg) {
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = `hsl(212 70% ${lum - 22}%)`; ctx.lineWidth = larg;
+    ctx.beginPath(); ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(sway * .4 + 22, -150, sway, -300); ctx.stroke();
+    ctx.fillStyle = `hsl(205 70% ${lum - 12}%)`;
+    for (const s of [-1, 1]) {
+      ctx.save(); ctx.translate(s * 6 + sway * .1, -85 - (s > 0 ? 40 : 0)); ctx.rotate(s * 1);
+      ctx.beginPath(); ctx.ellipse(s * 28, 0, 34, 11, 0, 0, TAU); ctx.fill(); ctx.restore();
+    }
+  }
+
+  // ---------- Fleur simple (champ) ----------
+  function fleurSimple(sway, lum, pal) {
+    tige(sway, lum, 7);
+    ctx.save(); ctx.translate(sway, -300);
+    for (let i = 0; i < 8; i++) {
+      ctx.save(); ctx.rotate(i * Math.PI / 4 + .2);
+      ctx.fillStyle = pal[i % 2];
+      ctx.beginPath(); ctx.ellipse(28, 0, 28, 12, 0, 0, TAU); ctx.fill(); ctx.restore();
+    }
+    ctx.fillStyle = '#ffd95a'; ctx.beginPath(); ctx.arc(0, 0, 9, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  // ---------- Fleur principale : floraison en 3D ----------
+  const COUCHES = [
+    { n: 8, L: 84, w: 26, t1: 1.5,  d: 0,   off: 0,           c: ['#e8408f', '#ffa5cf'] },
+    { n: 8, L: 72, w: 24, t1: 1.1,  d: .14, off: Math.PI / 8, c: ['#f0509c', '#ffb8d8'] },
+    { n: 6, L: 58, w: 21, t1: .72,  d: .28, off: .4,          c: ['#f86aac', '#ffc9e1'] },
+    { n: 5, L: 40, w: 16, t1: .36,  d: .42, off: .9,          c: ['#ff82bb', '#ffdced'] }
+  ];
+
+  function petale(Lp, w, c) {
+    const g = ctx.createLinearGradient(0, 0, Lp, 0);
+    g.addColorStop(0, c[0]); g.addColorStop(1, c[1]);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(Lp * .25, -w * 1.05, Lp * .75, -w * .95, Lp, 0);
+    ctx.bezierCurveTo(Lp * .75, w * .95, Lp * .25, w * 1.05, 0, 0);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(200,40,110,.28)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(Lp * .1, 0); ctx.lineTo(Lp * .8, 0); ctx.stroke();
+  }
+
+  function fleurMain(b, now, sway) {
+    const psi = .12 + 1.0 * ease(seg(b, .1, 1));
+    const cp = Math.cos(psi), sp = Math.sin(psi);
+    tige(sway, 58, 9);
+
+    ctx.save(); ctx.translate(sway, -300);
+
+    const lueur = seg(b, .4, 1);
+    if (lueur > 0) {
+      const gl = ctx.createRadialGradient(0, 0, 10, 0, 0, 160);
+      gl.addColorStop(0, `rgba(255,140,200,${.35 * lueur})`); gl.addColorStop(1, 'rgba(255,140,200,0)');
+      ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(0, 0, 160, 0, TAU); ctx.fill();
+    }
+
+    ctx.fillStyle = 'hsl(210 65% 40%)';
+    ctx.beginPath(); ctx.ellipse(0, 8, 13, 10, 0, 0, TAU); ctx.fill();
+
+    const liste = [];
+    COUCHES.forEach((co, k) => {
+      const ok = backOut(seg(b, co.d, co.d + .55));
+      const th = lerp(.14 - k * .025, co.t1, ok);
+      for (let i = 0; i < co.n; i++) {
+        const phi = co.off + i * TAU / co.n + ok * .5;
+        const x = Math.sin(th) * Math.cos(phi), y = Math.cos(th), z = Math.sin(th) * Math.sin(phi);
+        const y2 = y * cp - z * sp, z2 = y * sp + z * cp;
+        const m = Math.hypot(x, y2);
+        liste.push({ z: z2, ang: Math.atan2(-y2, x), Lp: co.L * Math.max(.3, m), w: co.w * (.75 + .25 * m), c: co.c });
+      }
+    });
+    liste.sort((a, b) => a.z - b.z);
+    for (const p of liste) { ctx.save(); ctx.rotate(p.ang); petale(p.Lp, p.w, p.c); ctx.restore(); }
+
+    const rc = lerp(0, 11, ease(seg(b, .5, .9)));
+    if (rc > .3) { ctx.fillStyle = '#ffd95a'; ctx.beginPath(); ctx.arc(0, 0, rc, 0, TAU); ctx.fill(); }
+
+    const vis = seg(b, .85, 1);
+    if (vis > 0) {
+      for (let j = 0; j < 18; j++) {
+        const p = (now / (3500 + j * 160) + j / 18) % 1;
+        ctx.fillStyle = `rgba(255,230,245,${Math.sin(p * Math.PI) * .8 * vis})`;
+        ctx.beginPath(); ctx.arc(Math.cos(j * 2.4) * (50 + 90 * p), -20 - 160 * p, 2.2, 0, TAU); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ---------- Brin d'herbe (champ de fleurs de premier plan) ----------
+  function brin(px, py, s, hh, b, sw, col, lw) {
+    ctx.strokeStyle = col; ctx.lineWidth = Math.max(.8, lw * s); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(px, py);
+    ctx.quadraticCurveTo(px + (b * .5 + sw * .4) * s, py - hh * .55 * s, px + (b + sw) * s, py - hh * s);
+    ctx.stroke();
+  }
+
+  // ---------- Lune réaliste (texture générée une seule fois) ----------
+  const texLune = (() => {
+    const S = 512, R = S / 2, c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    let sd = 5;
+    const r = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+    g.beginPath(); g.arc(R, R, R, 0, TAU); g.clip();
+
+    // base gris
+    const base = g.createRadialGradient(R, R, 0, R, R, R);
+    base.addColorStop(0, '#78787c'); base.addColorStop(1, '#4c4c51');
+    g.fillStyle = base; g.fillRect(0, 0, S, S);
+
+    // grandes mers sombres
+    [[.38, .36, .2], [.6, .3, .14], [.5, .56, .22], [.3, .64, .13], [.67, .6, .12], [.45, .2, .1]].forEach(([x, y, rr]) => {
+      const gr = g.createRadialGradient(x * S, y * S, 0, x * S, y * S, rr * S);
+      gr.addColorStop(0, 'rgba(26,26,30,.65)'); gr.addColorStop(.7, 'rgba(26,26,30,.4)'); gr.addColorStop(1, 'rgba(26,26,30,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, S, S);
+    });
+
+    // grain fin de la surface
+    for (let i = 0; i < 3000; i++) {
+      const x = r() * S, y = r() * S, clair = r() > .5;
+      g.fillStyle = clair ? `rgba(210,210,215,${.04 + r() * .09})` : `rgba(10,10,14,${.05 + r() * .1})`;
+      g.beginPath(); g.arc(x, y, .5 + r() * 1.1, 0, TAU); g.fill();
+    }
+
+    // cratères : creux sombre, paroi éclairée en bas à gauche, ombre en haut à droite
+    for (let i = 0; i < 170; i++) {
+      const a = r() * TAU, d = Math.sqrt(r()) * R * .96;
+      const x = R + Math.cos(a) * d, y = R + Math.sin(a) * d;
+      const cr = 3 + Math.pow(r(), 2.4) * 34;
+      const gr = g.createRadialGradient(x, y, cr * .1, x, y, cr);
+      gr.addColorStop(0, 'rgba(18,18,22,.5)'); gr.addColorStop(.8, 'rgba(28,28,32,.25)'); gr.addColorStop(1, 'rgba(28,28,32,0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(x, y, cr, 0, TAU); g.fill();
+      g.lineWidth = Math.max(1, cr * .13);
+      g.strokeStyle = 'rgba(215,215,220,.38)';
+      g.beginPath(); g.arc(x, y, cr * .88, Math.PI * .5, Math.PI * 1.05); g.stroke();
+      g.strokeStyle = 'rgba(8,8,12,.42)';
+      g.beginPath(); g.arc(x, y, cr * .88, -Math.PI * .5, Math.PI * .05); g.stroke();
+    }
+
+    // lumière douce venant du haut à droite + assombrissement des bords
+    const lum = g.createRadialGradient(S * .7, S * .28, 0, S * .7, S * .28, S * 1.1);
+    lum.addColorStop(0, 'rgba(230,230,240,.15)'); lum.addColorStop(.55, 'rgba(0,0,0,0)'); lum.addColorStop(1, 'rgba(0,0,0,.6)');
+    g.fillStyle = lum; g.fillRect(0, 0, S, S);
+    const bord = g.createRadialGradient(R, R, R * .7, R, R, R);
+    bord.addColorStop(0, 'rgba(0,0,0,0)'); bord.addColorStop(1, 'rgba(0,0,0,.45)');
+    g.fillStyle = bord; g.fillRect(0, 0, S, S);
+    return c;
+  })();
+
+  function lune(x, y, r) {
+    const halo = ctx.createRadialGradient(x, y, r * .95, x, y, r * 2.2);
+    halo.addColorStop(0, 'rgba(150,155,175,.10)');
+    halo.addColorStop(1, 'rgba(150,155,175,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, TAU); ctx.fill();
+    ctx.drawImage(texLune, x - r, y - r, r * 2, r * 2);
+  }
+
+  // ---------- Timeline ----------
+  const T_FLEUR = 5500, T_CHAMP = 10500, T_LUNE = 15500, T_BOUTON = 17500;
+  let t0 = 0, actif = false, raf = 0, boutonMontre = false;
+
+  function dessiner(now) {
+    const t = now - t0;
+    const sway0 = Math.sin(now / 900);
+
+    const b = seg(t, 500, T_FLEUR);
+    const intro = ease(seg(t, 0, T_FLEUR));
+    const p2 = ease(seg(t, T_FLEUR, T_CHAMP));
+    const p3 = ease(seg(t, T_CHAMP, T_LUNE));
+    const zoom = lerp(lerp(lerp(3.2, 2.4, intro), .6, p2), .66, p3) * bz;
+    const camYFin = -140 - H * .27 / (.66 * bz);
+    const camY = lerp(lerp(-300, -150, p2), camYFin, p3);
+    const champT = ease(seg(t, T_FLEUR + 800, T_CHAMP - 800));
+    const etoilesT = ease(seg(t, 0, 1200));
+    const sx = x => W / 2 + x * zoom;
+    const sy = y => H / 2 + (y - camY) * zoom;
+    // flou uniquement sur le champ, pendant qu'il apparaît
+    const flou = !lowPower && champT > 0 && champT < .99 ? `blur(${((1 - champT) * 5).toFixed(1)}px)` : 'none';
+
+    // ciel
+    const ciel = ctx.createLinearGradient(0, 0, 0, H);
+    ciel.addColorStop(0, '#04061a'); ciel.addColorStop(.6, '#17133a'); ciel.addColorStop(1, '#35204a');
+    ctx.fillStyle = ciel; ctx.fillRect(0, 0, W, H);
+
+    for (const e of etoiles) {
+      ctx.fillStyle = `rgba(255,255,255,${etoilesT * (.5 + .5 * Math.sin(now / 600 + e.ph))})`;
+      ctx.beginPath(); ctx.arc(e.x * W, e.y * H, e.r, 0, TAU); ctx.fill();
+    }
+
+    // lune : part du coin supérieur droit puis s'installe en grand dans le ciel
+    const r0 = clamp(Math.min(W, H) * (W < 600 ? .11 : .085), 34, 82);
+    const rEnd = r0 * 1.7;
+    const xEnd = W - rEnd - Math.max(24, W * .06);
+    const yEnd = rEnd + Math.max(40, H * .1);
+    const mx = lerp(W - r0 - 30, xEnd, p3), my = lerp(r0 + 30, yEnd, p3), mr = r0 * (1 + .7 * p3);
+    lune(mx, my, mr);
+
+    // cœur rouge très discret qui apparaît sur la lune à la fin
+    const coeurT = ease(seg(t, T_LUNE, T_LUNE + 1800));
+    if (coeurT > 0) {
+      const rc = mr * 1.12 * (1 + .035 * Math.sin(now / 380) * coeurT);
+      ctx.save();
+      ctx.beginPath(); ctx.arc(mx, my, mr, 0, TAU); ctx.clip();
+      ctx.shadowColor = 'rgba(200,30,55,.6)'; ctx.shadowBlur = mr * .12;
+      ctx.fillStyle = `rgba(210,30,55,${(.3 * coeurT).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(mx, my + rc * .7);
+      ctx.bezierCurveTo(mx - rc * 1.35, my - rc * .2, mx - rc * .75, my - rc * 1.05, mx, my - rc * .45);
+      ctx.bezierCurveTo(mx + rc * .75, my - rc * 1.05, mx + rc * 1.35, my - rc * .2, mx, my + rc * .7);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+
+    // sol
+    const hor = sy(-140);
+    if (hor < H) {
+      const sol = ctx.createLinearGradient(0, hor, 0, H);
+      sol.addColorStop(0, '#223d3b'); sol.addColorStop(.35, '#162f2e'); sol.addColorStop(1, '#08181f');
+      ctx.fillStyle = sol;
+      ctx.beginPath();
+      ctx.moveTo(0, hor + Math.sin(now / 5000) * 3);
+      ctx.bezierCurveTo(W * .3, hor - 12 * zoom, W * .68, hor + 8 * zoom, W, hor - Math.sin(now / 5300) * 3);
+      ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath(); ctx.fill();
+
+      const brume = ctx.createLinearGradient(0, hor - 90 * zoom, 0, hor + 12 * zoom);
+      brume.addColorStop(0, 'rgba(190,120,175,0)'); brume.addColorStop(1, 'rgba(150,90,140,.2)');
+      ctx.fillStyle = brume; ctx.fillRect(0, hor - 90 * zoom, W, 102 * zoom);
+
+      if (champT > 0) {
+        // herbes + fleurettes réparties sur tout le sol, jusqu'en bas de l'écran
+        ctx.save();
+        ctx.globalAlpha = champT * .85;
+        ctx.filter = flou;
+        for (const g of herbes) {
+          const px = sx(g.x);
+          const py = hor + g.d * (H - hor + 20);
+          if (px < -20 || px > W + 20 || py < hor - 30 || py > H + 15) continue;
+          const taille = .7 + g.d * 1.45;
+          const balancement = Math.sin(now / 850 + g.ph) * g.h * .18;
+          ctx.strokeStyle = g.teinte > .5 ? 'rgba(151,190,119,.55)' : 'rgba(100,157,112,.6)';
+          ctx.lineWidth = Math.max(.9, taille * 1.25);
+          ctx.beginPath(); ctx.moveTo(px, py);
+          ctx.quadraticCurveTo(px + balancement, py - g.h * taille * .55, px + balancement * 1.6, py - g.h * taille);
+          ctx.stroke();
+          if (g.d > .3) {
+            const cote = g.ph > 3.14 ? -1 : 1;
+            const fx = px + balancement * .8, fy = py - g.h * taille * .48;
+            ctx.fillStyle = g.teinte > .5 ? 'rgba(132,181,106,.52)' : 'rgba(80,143,103,.58)';
+            ctx.beginPath(); ctx.moveTo(fx, fy);
+            ctx.quadraticCurveTo(fx + cote * 10 * taille, fy - 8 * taille, fx + cote * 22 * taille, fy + 3 * taille);
+            ctx.quadraticCurveTo(fx + cote * 10 * taille, fy + 5 * taille, fx, fy);
+            ctx.fill();
+          }
+          if (g.teinte > .72) {
+            ctx.fillStyle = 'rgba(255,205,126,.7)';
+            ctx.beginPath(); ctx.arc(px, py - g.h * taille - 2 * taille, Math.max(.8, 1.5 * taille), 0, TAU); ctx.fill();
+          }
+        }
+        for (const f of fleurettes) {
+          const px = sx(f.x), py = hor + f.d * (H - hor + 20);
+          if (px < -20 || px > W + 20 || py < hor || py > H + 10) continue;
+          const r = 1.4 + f.d * 3.4;
+          ctx.fillStyle = PAL[f.p][f.d > .5 ? 0 : 1];
+          for (let k = 0; k < 5; k++) {
+            ctx.beginPath(); ctx.arc(px + Math.cos(k * 1.2566) * r * 1.1, py + Math.sin(k * 1.2566) * r * 1.1, r * .75, 0, TAU); ctx.fill();
+          }
+          ctx.fillStyle = '#ffd95a'; ctx.beginPath(); ctx.arc(px, py, r * .6, 0, TAU); ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+
+    // fleurs du champ : de l'horizon jusqu'au bas de l'écran
+    const dessinerChamp = (a, z) => {
+      if (champT <= 0) return;
+      ctx.save();
+      ctx.globalAlpha = champT;
+      ctx.filter = flou;
+      for (let i = a; i < z; i++) {
+        const f = champ[i];
+        const s = zoom * (1 - f.d * .65) * f.h * .62 * lerp(1, .55, p3);
+        const px = sx(f.x), py = sy(yRang(f.d));
+        if (px < -150 || px > W + 150 || py - 300 * s > H + 20 || py < -40) continue;
+        ctx.save(); ctx.translate(px, py); ctx.scale(s, s);
+        fleurSimple(f.l + Math.sin(now / 1000 + f.ph) * 8, 55 - f.d * 12, PAL[f.p]);
+        ctx.restore();
+      }
+      ctx.restore();
+    };
+    const coupe = devantIdx < 0 ? champ.length : devantIdx;
+    dessinerChamp(0, coupe);
+
+    // fleur principale
+    ctx.save();
+    ctx.globalAlpha = 1 - p3 * .4;
+    ctx.translate(sx(0), sy(0));
+    const sp = zoom * lerp(1, .55, p3);
+    ctx.scale(sp, sp);
+    fleurMain(b, now, sway0 * 6 * ease(b));
+    ctx.restore();
+
+    // fleurs et herbe devant la fleur principale
+    dessinerChamp(coupe, champ.length);
+    if (champT > 0) {
+      ctx.save(); ctx.globalAlpha = champT; ctx.filter = flou;
+      for (const g of avant)
+        brin(sx(g.x), sy(g.y), zoom * lerp(1, .55, p3), g.hh, g.b, Math.sin(now / 800 + g.ph) * 7, 'hsl(160 45% 26%)', 3.2);
+      ctx.restore();
+    }
+
+    // ambiance plus sombre sur toute la scène
+    ctx.fillStyle = 'rgba(4,4,20,.2)'; ctx.fillRect(0, 0, W, H);
+
+    if (t > T_BOUTON && !boutonMontre) { boutonMontre = true; retour.classList.add('visible'); }
+  }
+
+  function boucle(now) {
+    if (!actif) return;
+    if (now - dernierRendu >= frameInterval) { dessiner(now); dernierRendu = now; }
+    raf = requestAnimationFrame(boucle);
+  }
+
+  // ---------- Navigation ----------
+  let minuterie = 0;
+
+  function lancer() {
+    clearTimeout(minuterie);          // annule l'arrêt programmé au retour (cause du bug au 2e clic)
+    cancelAnimationFrame(raf);
+    boutonMontre = false;
+    retour.classList.remove('visible');
+    t0 = performance.now();
+    dernierRendu = 0;
+    actif = true;
+    canvas.style.display = 'block';
+    raf = requestAnimationFrame(boucle);
+    menu.classList.add('cache');
+  }
+
+  function revenir() {
+    retour.classList.remove('visible');
+    menu.classList.remove('cache');
+    clearTimeout(minuterie);
+    minuterie = setTimeout(() => {
+      actif = false; cancelAnimationFrame(raf); canvas.style.display = 'none';
+    }, 900);
+  }
+
+  document.getElementById('entrer').addEventListener('click', lancer);
+  retour.addEventListener('click', revenir);
+  canvas.style.display = 'none';
+})();
+</script>
+</body>
+</html>
